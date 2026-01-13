@@ -9,7 +9,7 @@
  * - Configure git user.name and user.email
  */
 
-import { spawn } from 'node:child_process';
+import { $ } from 'command-stream';
 
 /**
  * Create a logger instance
@@ -31,93 +31,12 @@ function createDefaultLogger(options = {}) {
 }
 
 /**
- * Execute a command and return the result
- *
- * @param {string} command - The command to execute
- * @param {string[]} args - The command arguments
- * @param {Object} options - Spawn options
- * @returns {Promise<{stdout: string, stderr: string, exitCode: number}>}
- */
-function execCommand(command, args = [], options = {}) {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, {
-      stdio: 'pipe',
-      shell: false,
-      ...options,
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    child.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    child.on('close', (exitCode) => {
-      resolve({
-        stdout: stdout.trim(),
-        stderr: stderr.trim(),
-        exitCode: exitCode || 0,
-      });
-    });
-
-    child.on('error', (error) => {
-      resolve({
-        stdout: stdout.trim(),
-        stderr: error.message,
-        exitCode: 1,
-      });
-    });
-  });
-}
-
-/**
- * Execute an interactive command (inheriting stdio)
- *
- * @param {string} command - The command to execute
- * @param {string[]} args - The command arguments
- * @param {Object} options - Options
- * @param {string} options.input - Optional input to pipe to stdin
- * @returns {Promise<{exitCode: number}>}
- */
-function execInteractiveCommand(command, args = [], options = {}) {
-  return new Promise((resolve) => {
-    const { input } = options;
-    const child = spawn(command, args, {
-      stdio: input ? ['pipe', 'inherit', 'inherit'] : 'inherit',
-      shell: false,
-    });
-
-    if (input && child.stdin) {
-      child.stdin.write(input);
-      child.stdin.end();
-    }
-
-    child.on('close', (exitCode) => {
-      resolve({
-        exitCode: exitCode || 0,
-      });
-    });
-
-    child.on('error', (error) => {
-      console.error(`Failed to execute command: ${error.message}`);
-      resolve({
-        exitCode: 1,
-      });
-    });
-  });
-}
-
-/**
  * Default options for glab auth login
  */
 export const defaultAuthOptions = {
   hostname: 'gitlab.com',
   gitProtocol: 'https',
+  apiProtocol: 'https',
   useKeyring: false,
 };
 
@@ -141,19 +60,76 @@ export async function getGlabPath(options = {}) {
 
   // Use 'which' on Unix-like systems or 'where' on Windows
   const command = process.platform === 'win32' ? 'where' : 'which';
-  const result = await execCommand(command, ['glab']);
 
-  if (result.exitCode !== 0 || !result.stdout) {
+  try {
+    const result = await $`${command} glab`.run({ capture: true });
+
+    if (result.code !== 0 || !result.stdout) {
+      throw new Error(
+        'glab CLI not found. Please install glab: https://gitlab.com/gitlab-org/cli#installation'
+      );
+    }
+
+    // Get the first line (in case multiple paths are returned)
+    const glabPath = result.stdout.split('\n')[0].trim();
+    log.debug(`Found glab at: ${glabPath}`);
+
+    return glabPath;
+  } catch (error) {
+    if (error.message.includes('not found')) {
+      throw error;
+    }
     throw new Error(
       'glab CLI not found. Please install glab: https://gitlab.com/gitlab-org/cli#installation'
     );
   }
+}
 
-  // Get the first line (in case multiple paths are returned)
-  const glabPath = result.stdout.split('\n')[0].trim();
-  log.debug(`Found glab at: ${glabPath}`);
+/**
+ * Build glab auth login arguments from options
+ * @param {Object} options - Auth options
+ * @returns {string[]} Array of CLI arguments
+ */
+function buildGlabAuthLoginArgs(options) {
+  const {
+    hostname,
+    gitProtocol,
+    apiProtocol,
+    apiHost,
+    useKeyring,
+    jobToken,
+    token,
+    stdin,
+  } = options;
 
-  return glabPath;
+  const args = ['auth', 'login'];
+
+  if (hostname) {
+    args.push('--hostname', hostname);
+  }
+  if (gitProtocol) {
+    args.push('--git-protocol', gitProtocol);
+  }
+  if (apiProtocol) {
+    args.push('--api-protocol', apiProtocol);
+  }
+  if (apiHost) {
+    args.push('--api-host', apiHost);
+  }
+  if (useKeyring) {
+    args.push('--use-keyring');
+  }
+
+  // Handle authentication method (mutually exclusive)
+  if (jobToken) {
+    args.push('--job-token', jobToken);
+  } else if (token) {
+    args.push('--token', token);
+  } else if (stdin) {
+    args.push('--stdin');
+  }
+
+  return args;
 }
 
 /**
@@ -163,7 +139,11 @@ export async function getGlabPath(options = {}) {
  * @param {string} options.hostname - GitLab hostname (default: 'gitlab.com')
  * @param {string} options.token - GitLab access token (optional, for non-interactive login)
  * @param {string} options.gitProtocol - Git protocol: 'ssh', 'https', or 'http' (default: 'https')
+ * @param {string} options.apiProtocol - API protocol: 'https' or 'http' (default: 'https')
+ * @param {string} options.apiHost - Custom API host URL (optional)
  * @param {boolean} options.useKeyring - Store token in OS keyring (default: false)
+ * @param {string} options.jobToken - CI job token for authentication (optional)
+ * @param {boolean} options.stdin - Read token from stdin (default: false)
  * @param {boolean} options.verbose - Enable verbose logging
  * @param {Object} options.logger - Custom logger
  * @returns {Promise<boolean>} True if login was successful
@@ -173,50 +153,47 @@ export async function runGlabAuthLogin(options = {}) {
     hostname = defaultAuthOptions.hostname,
     token,
     gitProtocol = defaultAuthOptions.gitProtocol,
+    apiProtocol = defaultAuthOptions.apiProtocol,
+    apiHost,
     useKeyring = defaultAuthOptions.useKeyring,
+    jobToken,
+    stdin = false,
     verbose = false,
     logger = console,
   } = options;
 
   const log = createDefaultLogger({ verbose, logger });
 
-  // Build the arguments for glab auth login
-  const args = ['auth', 'login'];
-
-  // Add hostname
-  if (hostname) {
-    args.push('--hostname', hostname);
-  }
-
-  // Add git protocol
-  if (gitProtocol) {
-    args.push('--git-protocol', gitProtocol);
-  }
-
-  // Add keyring flag if specified
-  if (useKeyring) {
-    args.push('--use-keyring');
-  }
-
-  // If token is provided, use stdin mode
-  if (token) {
-    args.push('--stdin');
-  }
+  const args = buildGlabAuthLoginArgs({
+    hostname,
+    gitProtocol,
+    apiProtocol,
+    apiHost,
+    useKeyring,
+    jobToken,
+    token,
+    stdin,
+  });
 
   log.debug(`Running: glab ${args.join(' ')}`);
 
-  // Run glab auth login
-  const result = await execInteractiveCommand('glab', args, {
-    input: token ? `${token}\n` : undefined,
-  });
+  try {
+    const result = await $`glab ${args}`.run({
+      mirror: { stdout: true, stderr: true },
+      stdin: stdin ? 'inherit' : undefined,
+    });
 
-  if (result.exitCode !== 0) {
-    log.error('GitLab CLI authentication failed');
+    if (result.code !== 0) {
+      log.error('GitLab CLI authentication failed');
+      return false;
+    }
+
+    log.log('\nGitLab CLI authentication successful!');
+    return true;
+  } catch (error) {
+    log.error(`GitLab CLI authentication failed: ${error.message}`);
     return false;
   }
-
-  log.log('\nGitLab CLI authentication successful!');
-  return true;
 }
 
 /**
@@ -258,21 +235,23 @@ export async function runGlabAuthSetupGit(options = {}) {
     const credentialHelper = `!${glabPath} auth git-credential`;
 
     // Check if there's an existing credential helper for this host
-    const existingHelper = await execCommand('git', [
-      'config',
-      '--global',
-      '--get',
-      `credential.${credentialUrl}.helper`,
-    ]);
+    try {
+      const existingResult =
+        await $`git config --global --get credential.${credentialUrl}.helper`.run(
+          { capture: true }
+        );
 
-    if (existingHelper.exitCode === 0 && existingHelper.stdout && !force) {
-      log.debug(
-        `Existing credential helper found for ${hostname}: ${existingHelper.stdout}`
-      );
-      log.log(
-        `Git credential helper already configured for ${hostname}. Use force: true to overwrite.`
-      );
-      return true;
+      if (existingResult.code === 0 && existingResult.stdout && !force) {
+        log.debug(
+          `Existing credential helper found for ${hostname}: ${existingResult.stdout.trim()}`
+        );
+        log.log(
+          `Git credential helper already configured for ${hostname}. Use force: true to overwrite.`
+        );
+        return true;
+      }
+    } catch {
+      // No existing helper, proceed with setup
     }
 
     // First, clear any existing credential helpers for this host
@@ -280,25 +259,23 @@ export async function runGlabAuthSetupGit(options = {}) {
     log.debug(`Clearing existing credential helpers for ${credentialUrl}...`);
 
     // Set an empty helper first to clear the chain (ignore errors if not set)
-    await execCommand('git', [
-      'config',
-      '--global',
-      `credential.${credentialUrl}.helper`,
-      '',
-    ]);
+    try {
+      await $`git config --global credential.${credentialUrl}.helper ""`.run({
+        capture: true,
+      });
+    } catch {
+      // Ignore errors if not set
+    }
 
     // Add the glab credential helper
     log.debug(`Setting credential helper: ${credentialHelper}`);
 
-    const result = await execCommand('git', [
-      'config',
-      '--global',
-      '--add',
-      `credential.${credentialUrl}.helper`,
-      credentialHelper,
-    ]);
+    const result =
+      await $`git config --global --add credential.${credentialUrl}.helper ${credentialHelper}`.run(
+        { capture: true }
+      );
 
-    if (result.exitCode !== 0) {
+    if (result.code !== 0) {
       log.error(`Failed to set git credential helper: ${result.stderr}`);
       return false;
     }
@@ -334,15 +311,20 @@ export async function isGlabAuthenticated(options = {}) {
     args.push('--hostname', hostname);
   }
 
-  const result = await execCommand('glab', args);
+  try {
+    const result = await $`glab ${args}`.run({ capture: true });
 
-  if (result.exitCode !== 0) {
-    log.debug(`GitLab CLI is not authenticated: ${result.stderr}`);
+    if (result.code !== 0) {
+      log.debug(`GitLab CLI is not authenticated: ${result.stderr}`);
+      return false;
+    }
+
+    log.debug('GitLab CLI is authenticated');
+    return true;
+  } catch (error) {
+    log.debug(`GitLab CLI is not authenticated: ${error.message}`);
     return false;
   }
-
-  log.debug('GitLab CLI is authenticated');
-  return true;
 }
 
 /**
@@ -365,13 +347,13 @@ export async function getGitLabUsername(options = {}) {
     args.push('--hostname', hostname);
   }
 
-  const result = await execCommand('glab', args);
+  const result = await $`glab ${args}`.run({ capture: true });
 
-  if (result.exitCode !== 0) {
+  if (result.code !== 0) {
     throw new Error(`Failed to get GitLab username: ${result.stderr}`);
   }
 
-  const username = result.stdout;
+  const username = result.stdout.trim();
   log.debug(`GitLab username: ${username}`);
 
   return username;
@@ -397,13 +379,13 @@ export async function getGitLabEmail(options = {}) {
     args.push('--hostname', hostname);
   }
 
-  const result = await execCommand('glab', args);
+  const result = await $`glab ${args}`.run({ capture: true });
 
-  if (result.exitCode !== 0) {
+  if (result.code !== 0) {
     throw new Error(`Failed to get GitLab email: ${result.stderr}`);
   }
 
-  const email = result.stdout;
+  const email = result.stdout.trim();
 
   if (!email) {
     throw new Error(
@@ -453,9 +435,11 @@ export async function setGitConfig(key, value, options = {}) {
 
   log.debug(`Setting git config ${key} = ${value} (${scope})`);
 
-  const result = await execCommand('git', ['config', scopeFlag, key, value]);
+  const result = await $`git config ${scopeFlag} ${key} ${value}`.run({
+    capture: true,
+  });
 
-  if (result.exitCode !== 0) {
+  if (result.code !== 0) {
     throw new Error(`Failed to set git config ${key}: ${result.stderr}`);
   }
 
@@ -480,14 +464,14 @@ export async function getGitConfig(key, options = {}) {
 
   log.debug(`Getting git config ${key} (${scope})`);
 
-  const result = await execCommand('git', ['config', scopeFlag, key]);
+  const result = await $`git config ${scopeFlag} ${key}`.run({ capture: true });
 
-  if (result.exitCode !== 0) {
+  if (result.code !== 0) {
     log.debug(`Git config ${key} not set`);
     return null;
   }
 
-  const value = result.stdout;
+  const value = result.stdout.trim();
   log.debug(`Git config ${key} = ${value}`);
 
   return value;

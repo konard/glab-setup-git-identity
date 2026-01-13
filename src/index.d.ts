@@ -27,8 +27,16 @@ export interface AuthOptions extends LoggerOptions {
   token?: string;
   /** Git protocol: 'ssh', 'https', or 'http' (default: 'https') */
   gitProtocol?: 'ssh' | 'https' | 'http';
+  /** API protocol: 'https' or 'http' (default: 'https') */
+  apiProtocol?: 'https' | 'http';
+  /** Custom API host URL */
+  apiHost?: string;
   /** Store token in OS keyring */
   useKeyring?: boolean;
+  /** CI job token for authentication */
+  jobToken?: string;
+  /** Read token from stdin */
+  stdin?: boolean;
 }
 
 /**
@@ -103,6 +111,7 @@ export interface GitIdentity {
 export declare const defaultAuthOptions: {
   hostname: string;
   gitProtocol: string;
+  apiProtocol: string;
   useKeyring: boolean;
 };
 
