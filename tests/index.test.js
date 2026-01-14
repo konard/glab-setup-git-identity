@@ -22,6 +22,10 @@ describe('defaultAuthOptions', () => {
     expect(defaultAuthOptions.gitProtocol).toBe('https');
   });
 
+  it('should have correct default api protocol', () => {
+    expect(defaultAuthOptions.apiProtocol).toBe('https');
+  });
+
   it('should have useKeyring disabled by default', () => {
     expect(defaultAuthOptions.useKeyring).toBe(false);
   });

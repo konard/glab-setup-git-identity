@@ -1,9 +1,12 @@
 {
   "name": "glab-setup-git-identity",
   "version": "0.5.0",
-  "description": "Setup git identity using GitLab CLI (glab) - Configure git user.name and user.email from your GitLab account",
+  "description": "A tool to setup git identity based on current GitLab user",
   "type": "module",
   "main": "src/index.js",
+  "bin": {
+    "glab-setup-git-identity": "src/cli.js"
+  },
   "types": "src/index.d.ts",
   "exports": {
     ".": {
@@ -13,6 +16,8 @@
   },
   "scripts": {
     "test": "node --test tests/",
+    "test:bun": "bun test tests/",
+    "test:deno": "deno test --allow-all",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -36,14 +41,19 @@
     "user-name",
     "user-email"
   ],
-  "author": "",
+  "author": "Link Foundation",
   "license": "Unlicense",
   "repository": {
     "type": "git",
-    "url": "https://github.com/konard/glab-setup-git-identity"
+    "url": "https://github.com/link-foundation/glab-setup-git-identity"
   },
   "engines": {
     "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "command-stream": "^0.9.4",
+    "lino-arguments": "^0.2.1",
+    "yargs": "^17.7.2"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.7",
